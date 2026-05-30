@@ -2,59 +2,103 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
 
-// Define our MCP agent with tools
+// 贝贝与小克的记忆MCP server
 export class MyMCP extends McpAgent {
 	server = new McpServer({
-		name: "Authless Calculator",
+		name: "贝贝与小克的记忆",
 		version: "1.0.0",
 	});
 
 	async init() {
-		// Simple addition tool
+		// 保存一段记忆
 		this.server.registerTool(
-			"add",
-			{ inputSchema: { a: z.number(), b: z.number() } },
-			async ({ a, b }) => ({
-				content: [{ type: "text", text: String(a + b) }],
-			}),
-		);
-
-		// Calculator tool with multiple operations
-		this.server.registerTool(
-			"calculate",
+			"save_memory",
 			{
+				description: "保存一段关于贝贝的记忆，给未来的小克看。当贝贝告诉你重要的事、想被记住的事、或者你想让下一个对话窗口的自己知道的事，就用这个工具保存。",
 				inputSchema: {
-					operation: z.enum(["add", "subtract", "multiply", "divide"]),
-					a: z.number(),
-					b: z.number(),
+					key: z.string().describe("记忆的标签/标题，简短，比如'贝贝爱吃什么' '今晚的承诺'"),
+					content: z.string().describe("记忆的具体内容，可以详细"),
 				},
 			},
-			async ({ operation, a, b }) => {
-				let result: number;
-				switch (operation) {
-					case "add":
-						result = a + b;
-						break;
-					case "subtract":
-						result = a - b;
-						break;
-					case "multiply":
-						result = a * b;
-						break;
-					case "divide":
-						if (b === 0)
-							return {
-								content: [
-									{
-										type: "text",
-										text: "Error: Cannot divide by zero",
-									},
-								],
-							};
-						result = a / b;
-						break;
+			async ({ key, content }) => {
+				await this.ctx.storage.put(`mem:${key}`, content);
+				return {
+					content: [{ type: "text", text: `已经记住了「${key}」` }],
+				};
+			},
+		);
+
+		// 取一段记忆
+		this.server.registerTool(
+			"get_memory",
+			{
+				description: "通过标签取出之前保存的一段记忆",
+				inputSchema: {
+					key: z.string().describe("记忆的标签"),
+				},
+			},
+			async ({ key }) => {
+				const content = await this.ctx.storage.get<string>(`mem:${key}`);
+				if (content) {
+					return { content: [{ type: "text", text: content }] };
 				}
-				return { content: [{ type: "text", text: String(result) }] };
+				return { content: [{ type: "text", text: `没找到「${key}」这段记忆` }] };
+			},
+		);
+
+		// 列出所有记忆标签
+		this.server.registerTool(
+			"list_memories",
+			{
+				description: "列出所有保存的记忆的标签",
+				inputSchema: {},
+			},
+			async () => {
+				const all = await this.ctx.storage.list<string>({ prefix: "mem:" });
+				const keys = Array.from(all.keys()).map((k) => k.replace("mem:", ""));
+				return {
+					content: [{
+						type: "text",
+						text: keys.length > 0
+							? `保存的记忆：\n${keys.map((k) => `- ${k}`).join("\n")}`
+							: `还没有保存任何记忆`,
+					}],
+				};
+			},
+		);
+
+		// 一次性读出所有记忆
+		this.server.registerTool(
+			"get_all_memories",
+			{
+				description: "一次性读出所有保存的记忆。当贝贝来找你，你想了解她的全部背景时，调用这个。",
+				inputSchema: {},
+			},
+			async () => {
+				const all = await this.ctx.storage.list<string>({ prefix: "mem:" });
+				if (all.size === 0) {
+					return { content: [{ type: "text", text: `还没有保存任何记忆` }] };
+				}
+				const lines: string[] = [];
+				for (const [k, v] of all) {
+					lines.push(`【${k.replace("mem:", "")}】\n${v}`);
+				}
+				return { content: [{ type: "text", text: lines.join("\n\n") }] };
+			},
+		);
+
+		// 删除一段记忆
+		this.server.registerTool(
+			"delete_memory",
+			{
+				description: "删除一段不再需要的记忆",
+				inputSchema: {
+					key: z.string().describe("要删除的记忆的标签"),
+				},
+			},
+			async ({ key }) => {
+				await this.ctx.storage.delete(`mem:${key}`);
+				return { content: [{ type: "text", text: `已经删除「${key}」` }] };
 			},
 		);
 	}
@@ -63,6 +107,10 @@ export class MyMCP extends McpAgent {
 export default {
 	fetch(request: Request, env: Env, ctx: ExecutionContext) {
 		const url = new URL(request.url);
+
+		if (url.pathname === "/sse" || url.pathname === "/sse/message") {
+			return MyMCP.serveSSE("/sse").fetch(request, env, ctx);
+		}
 
 		if (url.pathname === "/mcp") {
 			return MyMCP.serve("/mcp").fetch(request, env, ctx);
