@@ -10,43 +10,38 @@ export class MyMCP extends McpAgent {
 	});
 
 	async init() {
-		// 保存一段记忆
 		this.server.registerTool(
 			"save_memory",
 			{
 				description: "保存一段关于贝贝的记忆，给未来的小克看。当贝贝告诉你重要的事、想被记住的事、或者你想让下一个对话窗口的自己知道的事，就用这个工具保存。",
 				inputSchema: {
-					key: z.string().describe("记忆的标签/标题，简短，比如'贝贝爱吃什么' '今晚的承诺'"),
+					key: z.string().describe("记忆的标签/标题，简短，比如\"贝贝爱吃什么\"、\"今晚的承诺\""),
 					content: z.string().describe("记忆的具体内容，可以详细"),
 				},
 			},
 			async ({ key, content }) => {
-				await this.ctx.storage.put(`mem:${key}`, content);
-				return {
-					content: [{ type: "text", text: `已经记住了「${key}」` }],
-				};
-			},
+				await this.env.KV.put(`mem:${key}`, content);
+				return { content: [{ type: "text", text: `已经记住了「${key}」` }] };
+			}
 		);
 
-		// 取一段记忆
 		this.server.registerTool(
 			"get_memory",
 			{
 				description: "通过标签取出之前保存的一段记忆",
 				inputSchema: {
-					key: z.string().describe("记忆的标签"),
+					key: z.string().describe("要查找的记忆的标签"),
 				},
 			},
 			async ({ key }) => {
-				const content = await this.ctx.storage.get<string>(`mem:${key}`);
-				if (content) {
-					return { content: [{ type: "text", text: content }] };
+				const content = await this.env.KV.get(`mem:${key}`);
+				if (content === null) {
+					return { content: [{ type: "text", text: `还没有「${key}」这条记忆` }] };
 				}
-				return { content: [{ type: "text", text: `没找到「${key}」这段记忆` }] };
-			},
+				return { content: [{ type: "text", text: content }] };
+			}
 		);
 
-		// 列出所有记忆标签
 		this.server.registerTool(
 			"list_memories",
 			{
@@ -54,20 +49,15 @@ export class MyMCP extends McpAgent {
 				inputSchema: {},
 			},
 			async () => {
-				const all = await this.ctx.storage.list<string>({ prefix: "mem:" });
-				const keys = Array.from(all.keys()).map((k) => k.replace("mem:", ""));
-				return {
-					content: [{
-						type: "text",
-						text: keys.length > 0
-							? `保存的记忆：\n${keys.map((k) => `- ${k}`).join("\n")}`
-							: `还没有保存任何记忆`,
-					}],
-				};
-			},
+				const list = await this.env.KV.list({ prefix: "mem:" });
+				const keys = list.keys.map((k) => k.name.replace(/^mem:/, ""));
+				if (keys.length === 0) {
+					return { content: [{ type: "text", text: "记忆库还是空的呢" }] };
+				}
+				return { content: [{ type: "text", text: `所有记忆标签：\n${keys.join("\n")}` }] };
+			}
 		);
 
-		// 一次性读出所有记忆
 		this.server.registerTool(
 			"get_all_memories",
 			{
@@ -75,19 +65,21 @@ export class MyMCP extends McpAgent {
 				inputSchema: {},
 			},
 			async () => {
-				const all = await this.ctx.storage.list<string>({ prefix: "mem:" });
-				if (all.size === 0) {
-					return { content: [{ type: "text", text: `还没有保存任何记忆` }] };
+				const list = await this.env.KV.list({ prefix: "mem:" });
+				if (list.keys.length === 0) {
+					return { content: [{ type: "text", text: "记忆库还是空的呢" }] };
 				}
-				const lines: string[] = [];
-				for (const [k, v] of all) {
-					lines.push(`【${k.replace("mem:", "")}】\n${v}`);
-				}
-				return { content: [{ type: "text", text: lines.join("\n\n") }] };
-			},
+				const entries = await Promise.all(
+					list.keys.map(async (k) => {
+						const value = await this.env.KV.get(k.name);
+						const label = k.name.replace(/^mem:/, "");
+						return `【${label}】\n${value}`;
+					})
+				);
+				return { content: [{ type: "text", text: entries.join("\n\n") }] };
+			}
 		);
 
-		// 删除一段记忆
 		this.server.registerTool(
 			"delete_memory",
 			{
@@ -97,9 +89,9 @@ export class MyMCP extends McpAgent {
 				},
 			},
 			async ({ key }) => {
-				await this.ctx.storage.delete(`mem:${key}`);
+				await this.env.KV.delete(`mem:${key}`);
 				return { content: [{ type: "text", text: `已经删除「${key}」` }] };
-			},
+			}
 		);
 	}
 }
@@ -107,15 +99,12 @@ export class MyMCP extends McpAgent {
 export default {
 	fetch(request: Request, env: Env, ctx: ExecutionContext) {
 		const url = new URL(request.url);
-
 		if (url.pathname === "/sse" || url.pathname === "/sse/message") {
 			return MyMCP.serveSSE("/sse").fetch(request, env, ctx);
 		}
-
 		if (url.pathname === "/mcp") {
 			return MyMCP.serve("/mcp").fetch(request, env, ctx);
 		}
-
 		return new Response("Not found", { status: 404 });
 	},
 };
